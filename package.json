@@ -1,0 +1,33 @@
+{
+  "name": "mpp-endpoint-service",
+  "version": "0.1.0",
+  "description": "Turn any API into an MPP card-compatible endpoint. Self-serve tool for acquirers and merchants.",
+  "main": "dist/index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "tsx --test src/**/*.test.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/JR2321/mpp-endpoint-service.git"
+  },
+  "bugs": {
+    "url": "https://github.com/JR2321/mpp-endpoint-service/issues"
+  },
+  "homepage": "https://github.com/JR2321/mpp-endpoint-service#readme",
+  "type": "module",
+  "dependencies": {
+    "@hono/node-server": "^1.19.11",
+    "hono": "^4.12.8"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
