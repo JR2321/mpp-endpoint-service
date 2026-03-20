@@ -18,6 +18,10 @@ export interface EndpointConfig {
   acceptedNetworks: string[]
   billingRequired: boolean
   upstreamHeaders?: Record<string, string>
+  /** URL to call for dynamic pricing. POST with { method, path, query, headers }. Returns { amount }. */
+  pricingWebhookUrl?: string
+  /** Gateway adapter name override (default: uses env GATEWAY_ADAPTER or sandbox) */
+  gatewayAdapter?: string
   createdAt: string
   updatedAt: string
 }
@@ -116,6 +120,8 @@ export interface CreateEndpointRequest {
   accepted_networks?: string[]
   billing_required?: boolean
   upstream_headers?: Record<string, string>
+  pricing_webhook_url?: string
+  gateway_adapter?: string
 }
 
 export interface UpdateEndpointRequest {
@@ -127,6 +133,8 @@ export interface UpdateEndpointRequest {
   upstream_headers?: Record<string, string>
   billing_required?: boolean
   status?: 'sandbox' | 'production' | 'disabled'
+  pricing_webhook_url?: string
+  gateway_adapter?: string
 }
 
 // ── Discovery types ─────────────────────────────────────────────────

@@ -65,13 +65,39 @@ function parsePaymentAuth(header: string): Record<string, string> | null {
   return params
 }
 
+/** Resolve the charge amount, calling pricing webhook if configured. */
+async function resolveAmount(endpoint: EndpointWithKeys, request: Request): Promise<string> {
+  if (!endpoint.pricingWebhookUrl) return endpoint.amount
+  try {
+    const url = new URL(request.url)
+    const res = await fetch(endpoint.pricingWebhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        endpoint_id: endpoint.id,
+        method: request.method,
+        path: url.pathname,
+        query: Object.fromEntries(url.searchParams),
+      }),
+      signal: AbortSignal.timeout(3000),
+    })
+    if (!res.ok) return endpoint.amount // fallback to static price
+    const data = (await res.json()) as { amount?: string }
+    return data.amount || endpoint.amount
+  } catch {
+    return endpoint.amount // fallback to static price on error
+  }
+}
+
 /** Build the 402 challenge response. */
-function buildChallengeResponse(endpoint: EndpointWithKeys, body?: string): Response {
+function buildChallengeResponse(endpoint: EndpointWithKeys, body?: string, dynamicAmount?: string): Response {
   const challengeId = generateChallengeId()
   const hmac = signChallenge(challengeId, SECRET_KEY)
 
+  const effectiveAmount = dynamicAmount || endpoint.amount
+
   const request: ChallengeRequest = {
-    amount: endpoint.amount,
+    amount: effectiveAmount,
     currency: endpoint.currency,
     description: endpoint.description || endpoint.merchantName,
     methodDetails: {
@@ -104,7 +130,7 @@ function buildChallengeResponse(endpoint: EndpointWithKeys, body?: string): Resp
     type: 'https://paymentauth.org/problems/payment-required',
     title: 'Payment Required',
     status: 402,
-    detail: `This resource requires a card payment of $${(parseInt(endpoint.amount) / 100).toFixed(2)} ${endpoint.currency.toUpperCase()}.`,
+    detail: `This resource requires a card payment of $${(parseInt(effectiveAmount) / 100).toFixed(2)} ${endpoint.currency.toUpperCase()}.`,
   }
 
   return new Response(JSON.stringify(problemBody), {
@@ -185,7 +211,8 @@ export async function handleMppRequest(
 
   if (!authHeader || !authHeader.startsWith('Payment ')) {
     // No payment credential: return 402 challenge
-    return buildChallengeResponse(endpoint, requestBody)
+    const dynamicAmount = await resolveAmount(endpoint, request)
+    return buildChallengeResponse(endpoint, requestBody, dynamicAmount)
   }
 
   // Parse the payment credential
@@ -259,8 +286,11 @@ export async function handleMppRequest(
   // Mark challenge as used BEFORE gateway call to prevent replays
   markChallengeUsed(challenge.id)
 
-  // Select gateway
-  const gatewayName = endpoint.status === 'production' ? (process.env.GATEWAY_ADAPTER || 'sandbox') : 'sandbox'
+  // Select gateway (per-endpoint override > env var > sandbox)
+  const gatewayName =
+    endpoint.status === 'production'
+      ? (endpoint.gatewayAdapter || process.env.GATEWAY_ADAPTER || 'sandbox')
+      : 'sandbox'
   const gateway = gateways[gatewayName] || gateways.sandbox
 
   // Authorize the payment

@@ -1,69 +1,102 @@
 # MPP Endpoint-as-a-Service
 
-Turn any API into an MPP card-compatible endpoint. Built for acquirers who want to compete with Stripe's MPP offering.
+Turn any API into an MPP card-compatible endpoint. Built for acquirers who want to offer their merchants MPP support without requiring them to migrate to Stripe.
 
 ## What is this?
 
-The [Machine Payments Protocol](https://mpp.dev) (MPP) launched on March 18, 2026 as an open standard for machine-to-machine payments. Stripe merchants can accept MPP payments in a few lines of code. **This project builds the equivalent capability for merchants on any acquirer.**
+The [Machine Payments Protocol](https://mpp.dev) (MPP) launched as an open standard for machine-to-machine payments. Stripe merchants can accept MPP payments in a few lines of code. **This project builds the equivalent capability for merchants on any acquirer** (Worldpay, Fiserv, Adyen, etc.).
 
 An AI agent hits your endpoint, gets a 402 payment challenge, pays with an encrypted Visa network token, and receives the resource. Your API stays exactly as it is. We handle the protocol.
+
+## Two integration modes
+
+**Proxy mode** (hosted): Zero code changes. The service sits in front of your API.
+
+```bash
+# Create an endpoint
+curl -X POST http://localhost:3000/v1/endpoints \
+  -H "Content-Type: application/json" \
+  -d '{
+    "upstream_url": "https://api.example.com/weather",
+    "amount": "500",
+    "currency": "usd",
+    "merchant_name": "Weather API"
+  }'
+
+# Test the MPP flow
+npx mppx http://localhost:3000/v1/mpp/<endpoint_id>
+```
+
+**Middleware mode** (embedded): Drop into your existing server.
+
+```typescript
+import { Hono } from 'hono'
+import { mppCardMiddleware, sandboxGateway } from 'mpp-endpoint-service/middleware'
+
+const app = new Hono()
+const mpp = mppCardMiddleware({
+  amount: '500',
+  currency: 'usd',
+  merchantName: 'Weather API',
+  gateway: sandboxGateway,
+})
+
+app.get('/weather', async (c) => {
+  const res = await mpp(c.req.raw, async () => {
+    return c.json({ temp: 72, city: 'SF' })
+  })
+  return res
+})
+```
 
 ## Quick start
 
 ```bash
-# Clone and install
 git clone https://github.com/JR2321/mpp-endpoint-service.git
 cd mpp-endpoint-service
 npm install
-
-# Start the server
 npx tsx src/index.ts
 ```
 
-### Create an endpoint
+## Features (v1)
 
-```bash
-curl -X POST http://localhost:3000/v1/endpoints \
-  -H "Content-Type: application/json" \
-  -d '{
-    "upstream_url": "https://httpbin.org/get",
-    "amount": "500",
-    "currency": "usd",
-    "merchant_name": "My API"
-  }'
-```
-
-### Test the MPP flow
-
-```bash
-# Get a 402 challenge
-curl -i http://localhost:3000/v1/mpp/<endpoint_id>
-
-# Full flow with mppx CLI
-npx mppx http://localhost:3000/v1/mpp/<endpoint_id>
-```
+- Full MPP card protocol compliance (402 challenges, JWE decryption, gateway auth, receipts)
+- Self-serve endpoint CRUD API (create an MPP endpoint in under 5 minutes)
+- RSA key management with rotation and grace period for old keys
+- Pluggable gateway adapters (sandbox built-in, Worldpay and Fiserv stubs included)
+- Reverse proxy mode (sits in front of your API, zero code changes)
+- Middleware mode (embed in Hono, Express, or any Fetch API server)
+- Dynamic pricing (static amount, callback function, or webhook URL)
+- Sandbox with 6 test card IDs for success, decline, and error scenarios
+- Body binding via SHA-256 digest to prevent POST body tampering
+- Discovery endpoint for machine-readable service catalog
+- Transaction logging with status, latency, and gateway references
+- Docker-ready
 
 ## Architecture
 
 ```
-Agent ──► MPP Endpoint Service ──► Your API
-              │
-              ├── 402 Challenge (amount, RSA public key)
-              ├── Decrypt JWE token (RSA-OAEP-256 + AES-256-GCM)
-              ├── Authorize via acquirer gateway
-              └── Proxy request + attach Payment-Receipt
+┌──────────────────────────────────────────────────────────────┐
+│                        Agent / Client                         │
+│  1. GET /v1/mpp/:id → 402 + Challenge (amount, RSA pub key) │
+│  2. Encrypt network token (JWE RSA-OAEP-256 + AES-256-GCM)  │
+│  3. Retry with Authorization: Payment ...                     │
+└──────────────────────┬───────────────────────────────────────┘
+                       │
+          ┌────────────▼────────────┐
+          │  MPP Endpoint Service    │
+          │                          │
+          │  • Decrypt JWE token     │
+          │  • Authorize via gateway │
+          │  • Proxy to upstream     │
+          │  • Return + Receipt      │
+          └──────────┬───────────────┘
+                     │
+      ┌──────────────┼──────────────┐
+      ▼              ▼              ▼
+  Sandbox       Worldpay        Fiserv
+  (built-in)    (stub)          (stub)
 ```
-
-## Features (v0.1.0)
-
-- **Full MPP card protocol compliance** — 402 challenges, JWE decryption, gateway auth, receipts
-- **Endpoint CRUD API** — Create, list, update, delete payment-gated endpoints
-- **RSA key management** — Auto-generated key pairs, rotation with grace period
-- **Pluggable gateway adapters** — Sandbox included, bring your own acquirer
-- **Reverse proxy** — Sits in front of your API, zero code changes
-- **Discovery endpoint** — Machine-readable service catalog at `/v1/discover`
-- **Sandbox mode** — Test cards for success, decline, and error scenarios
-- **Body binding** — SHA-256 digest prevents POST body tampering
 
 ## Test cards (sandbox mode)
 
@@ -76,13 +109,56 @@ Agent ──► MPP Endpoint Service ──► Your API
 | `card_test_error_timeout` | Gateway timeout |
 | `card_test_error_network` | Network error |
 
+## Dynamic pricing
+
+Three options for charge amounts:
+
+**Static** (default): Set `amount` on the endpoint. Same price for every request.
+
+**Function callback** (middleware mode): Pass a function that returns the amount based on the request.
+
+```typescript
+mppCardMiddleware({
+  amount: (req) => {
+    const url = new URL(req.url)
+    return url.pathname.includes('/premium') ? '1000' : '100'
+  },
+  // ...
+})
+```
+
+**Webhook** (proxy mode): Set `pricing_webhook_url` on the endpoint. Before issuing the 402 challenge, the proxy POSTs request details and expects `{ "amount": "500" }` back.
+
+```bash
+curl -X PATCH http://localhost:3000/v1/endpoints/ep_abc \
+  -H "Content-Type: application/json" \
+  -d '{ "pricing_webhook_url": "https://api.example.com/pricing" }'
+```
+
+## Gateway adapters
+
+| Adapter | Status | Notes |
+|---------|--------|-------|
+| `sandbox` | Production-ready | Built-in test adapter. No credentials needed. |
+| `worldpay` | Stub | Scaffolded. Requires Worldpay XML Direct credentials. |
+| `fiserv` | Stub | Scaffolded. Requires Fiserv Commerce Hub API key + HMAC secret. |
+
+To implement a new gateway, export an object implementing `GatewayAdapter`:
+
+```typescript
+interface GatewayAdapter {
+  charge(params: ChargeParams): Promise<ChargeResult>
+  void?(params: { reference: string }): Promise<{ status: 'voided' | 'error'; reference: string }>
+}
+```
+
 ## Running tests
 
 ```bash
-npx tsx --test src/**/*.test.ts
+npx tsx --test src/crypto.test.ts src/integration.test.ts src/middleware.test.ts
 ```
 
-**21 tests** covering crypto operations, endpoint management, the full 402 payment flow, challenge replay protection, and decline handling.
+**23 tests** across 3 suites covering crypto operations, endpoint management, the full 402 payment flow, middleware mode, dynamic pricing, challenge replay protection, and decline handling.
 
 ## API routes
 
@@ -99,24 +175,29 @@ npx tsx --test src/**/*.test.ts
 | `GET` | `/v1/discover` | Service catalog |
 | `ANY` | `/v1/mpp/:id` | MPP payment-gated proxy |
 
+## Docker
+
+```bash
+docker build -t mpp-endpoint-service .
+docker run -p 3000:3000 mpp-endpoint-service
+```
+
 ## Documents
 
-- [**PRD.md**](./PRD.md) — Product Requirements Document
-- [**docs/**](./docs/) — Developer documentation (Stripe-quality)
+- [PRD.md](./PRD.md) - Product Requirements Document
+- [docs/](./docs/) - Developer documentation
   - [Quickstart: Proxy mode](./docs/quickstart-proxy.md)
   - [Quickstart: Middleware mode](./docs/quickstart-middleware.md)
   - [API Reference](./docs/api-reference.md)
   - [Gateway Adapters](./docs/gateway-adapters.md)
   - [Error Reference](./docs/errors.md)
   - [Testing & Sandbox](./docs/testing.md)
-  - [Concepts](./docs/concepts.md)
 
 ## Key references
 
 - [MPP Protocol](https://mpp.dev)
 - [Visa MPP Card Spec](https://paymentauth.org/draft-card-charge-00)
-- [mpp-card SDK](https://www.npmjs.com/package/mpp-card)
-- [Visa Intelligent Commerce](https://developer.visa.com/capabilities/visa-intelligent-commerce)
+- [mppx SDK](https://www.npmjs.com/package/mppx)
 
 ## License
 

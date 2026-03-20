@@ -42,6 +42,8 @@ export function createEndpoint(req: CreateEndpointRequest): EndpointConfig & { k
     acceptedNetworks: req.accepted_networks || ['visa'],
     billingRequired: req.billing_required || false,
     upstreamHeaders: req.upstream_headers,
+    pricingWebhookUrl: req.pricing_webhook_url,
+    gatewayAdapter: req.gateway_adapter,
     createdAt: now,
     updatedAt: now,
     keys,
@@ -95,6 +97,8 @@ export function updateEndpoint(id: string, req: UpdateEndpointRequest): Endpoint
   if (req.upstream_headers !== undefined) ep.upstreamHeaders = req.upstream_headers
   if (req.billing_required !== undefined) ep.billingRequired = req.billing_required
   if (req.status !== undefined) ep.status = req.status
+  if (req.pricing_webhook_url !== undefined) ep.pricingWebhookUrl = req.pricing_webhook_url
+  if (req.gateway_adapter !== undefined) ep.gatewayAdapter = req.gateway_adapter
   ep.updatedAt = new Date().toISOString()
 
   return toPublic(ep)
